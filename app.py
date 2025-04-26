@@ -10,8 +10,6 @@ import csv
 # Load election data
 election_data = ElectionData('2015-gl-lis-okr.csv')
 
-
-
 DISTRICTS_SEATS = {}
 # Load district seats
 with open('okregi-mandaty.csv', 'r') as f:
@@ -19,57 +17,74 @@ with open('okregi-mandaty.csv', 'r') as f:
     for row in reader:
         DISTRICTS_SEATS[int(row['Nr'])] = int(row['LM'])
 
-# Store original seat allocation for comparison
-original_global_seat_allocation = {}
-# Calculate original seat allocation
-for district, votes in election_data.district_party_votes.items():
-    parties_votes = {party: votes for party, votes in votes.items() if party in election_data.eligible_parties}
-    allocation = dhondt(parties_votes, DISTRICTS_SEATS[district])
-    for party, seats in allocation.items():
-        if party not in original_global_seat_allocation:
-            original_global_seat_allocation[party] = 0
-        original_global_seat_allocation[party] += seats
-
-# Define party colors
-party_colors = {
-    '1 - Komitet Wyborczy Prawo i Sprawiedliwość': 'darkblue',
-    '2 - Komitet Wyborczy Platforma Obywatelska RP': 'orange',
-    '8 - Komitet Wyborczy Nowoczesna Ryszarda Petru': 'blue',
-    '6 - Koalicyjny Komitet Wyborczy Zjednoczona Lewica SLD+TR+PPS+UP+Zieloni': 'red',
-    '7 - Komitet Wyborczy Wyborców „Kukiz\'15”': 'black',
-    '4 - Komitet Wyborczy KORWiN': 'yellow',
-    '3 - Komitet Wyborczy Partia Razem': 'purple',
-    '5 - Komitet Wyborczy Polskie Stronnictwo Ludowe': 'green',
-}
 
 
-# Streamlit app
-st.title('Wyniki Wyborów')
+# Store original votes for reset functionality
+if 'original_votes' not in st.session_state:
+    st.session_state.original_votes = election_data.district_party_votes.copy()
 
-# Add sliders for adjusting votes
-percent_to_lewica = st.slider('Procent który jednak zagłosował na Nową Lewicę', 0, 100, 0)
-percent_stayed_home = st.slider('Ilu zostało w domu', 0, 100, 0)
+# Reset button
+if st.button('Reset to Original Values'):
+    election_data.district_party_votes = st.session_state.original_votes.copy()
+    st.session_state.modifications = []
 
-# Adjust votes based on slider values for each district
-for district, votes in election_data.district_party_votes.items():
-    total_votes_razem = votes.get('3 - Komitet Wyborczy Partia Razem', 0)
-    votes_to_lewica = int(total_votes_razem * (percent_to_lewica / 100))
-    votes_stayed_home = int(total_votes_razem * (percent_stayed_home / 100))
-    adjusted_votes_razem = total_votes_razem - votes_to_lewica - votes_stayed_home
+# Initialize modifications in session state
+if 'modifications' not in st.session_state:
+    st.session_state.modifications = []
 
-    # Update the votes in the election data
-    election_data.district_party_votes[district]['3 - Komitet Wyborczy Partia Razem'] = adjusted_votes_razem
-    if '6 - Koalicyjny Komitet Wyborczy Zjednoczona Lewica SLD+TR+PPS+UP+Zieloni' in election_data.district_party_votes[district]:
-        election_data.district_party_votes[district]['6 - Koalicyjny Komitet Wyborczy Zjednoczona Lewica SLD+TR+PPS+UP+Zieloni'] += votes_to_lewica
-    else:
-        election_data.district_party_votes[district]['6 - Koalicyjny Komitet Wyborczy Zjednoczona Lewica SLD+TR+PPS+UP+Zieloni'] = votes_to_lewica
+# Add a new modification
+if st.button('Add a Modification'):
+    st.session_state.modifications.append({
+        'selected_party': None,
+        'modification_type': None,
+        'target_party': None,
+        'modification_percentage': 0
+    })
+
+# Display and apply modifications
+for i, modification in enumerate(st.session_state.modifications):
+    st.write(f"Modification {i + 1}")
+    modification['selected_party'] = st.selectbox(
+        f"Select Party to Modify (Modification {i + 1})",
+        list(election_data.total_votes.keys()),
+        key=f"selected_party_{i}"
+    )
+    modification['modification_type'] = st.selectbox(
+        f"Select Modification Type (Modification {i + 1})",
+        ['Przenieś głosy', 'Usuń głosy'],
+        key=f"modification_type_{i}"
+    )
+    if modification['modification_type'] == 'Przenieś głosy':
+        modification['target_party'] = st.selectbox(
+            f"Select Target Party (Modification {i + 1})",
+            [p for p in election_data.total_votes.keys() if p != modification['selected_party']],
+            key=f"target_party_{i}"
+        )
+    modification['modification_percentage'] = st.slider(
+        f"Percentage of Votes to Modify (Modification {i + 1})",
+        0, 100, 0, key=f"modification_percentage_{i}"
+    )
+
+# Apply all modifications
+for modification in st.session_state.modifications:
+    for district, votes in election_data.district_party_votes.items():
+        total_votes_selected = votes.get(modification['selected_party'], 0)
+        votes_to_modify = int(total_votes_selected * (modification['modification_percentage'] / 100))
+
+        if modification['modification_type'] == 'Przenieś głosy' and modification['target_party']:
+            votes[modification['selected_party']] -= votes_to_modify
+            if modification['target_party'] in votes:
+                votes[modification['target_party']] += votes_to_modify
+            else:
+                votes[modification['target_party']] = votes_to_modify
+        elif modification['modification_type'] == 'Usuń głosy':
+            votes[modification['selected_party']] -= votes_to_modify
 
 # Recalculate the election data
 election_data.recalculate()
 
 # Calculate total votes and seats for all districts
 total_votes_all_districts = {}
-total_seats_all_districts = 0
 global_seat_allocation = {}
 
 for district, votes in election_data.district_party_votes.items():
@@ -77,7 +92,6 @@ for district, votes in election_data.district_party_votes.items():
         if party not in total_votes_all_districts:
             total_votes_all_districts[party] = 0
         total_votes_all_districts[party] += vote_count
-    total_seats_all_districts += DISTRICTS_SEATS[district]
 
     # Calculate seat allocation for the district
     parties_votes = {party: votes for party, votes in votes.items() if party in election_data.eligible_parties}
@@ -89,110 +103,51 @@ for district, votes in election_data.district_party_votes.items():
             global_seat_allocation[party] = 0
         global_seat_allocation[party] += seats
 
+# Store original seat allocation for reset functionality
+if 'original_global_seat_allocation' not in st.session_state:
+    st.session_state.original_global_seat_allocation = {}
+
+# Calculate original seat allocation (only once)
+if not st.session_state.original_global_seat_allocation:
+    for district, votes in election_data.district_party_votes.items():
+        parties_votes = {party: votes for party, votes in votes.items() if party in election_data.eligible_parties}
+        allocation = dhondt(parties_votes, DISTRICTS_SEATS[district])
+        for party, seats in allocation.items():
+            if party not in st.session_state.original_global_seat_allocation:
+                st.session_state.original_global_seat_allocation[party] = 0
+            st.session_state.original_global_seat_allocation[party] += seats
+
 # Calculate percentage of votes for each party
 total_votes_sum = sum(total_votes_all_districts.values())
 total_votes_df = pd.DataFrame(list(total_votes_all_districts.items()), columns=['Partia', 'Głosy'])
 total_votes_df['Procent'] = (total_votes_df['Głosy'] / total_votes_sum) * 100
 total_votes_df['Mandaty'] = total_votes_df['Partia'].map(global_seat_allocation).fillna(0).astype(int)
+total_votes_df['Mandaty Oryginalne'] = total_votes_df['Partia'].map(st.session_state.original_global_seat_allocation).fillna(0).astype(int)
+total_votes_df['Różnica Mandaty'] = total_votes_df['Mandaty'] - total_votes_df['Mandaty Oryginalne']
 total_votes_df['Nazwa Partii'] = total_votes_df['Partia'].map(lambda x: get_party_abbreviation(x))
 total_votes_df = total_votes_df[total_votes_df['Procent'] > 0.5]  # Filter parties with more than 0.5%
 total_votes_df = total_votes_df.sort_values(by='Głosy', ascending=False)
 
-# Calculate the difference in seats compared to the original seat allocation
-total_votes_df['Różnica Mandaty'] = total_votes_df.apply(lambda row: row['Mandaty'] - original_global_seat_allocation.get(row['Partia'], 0), axis=1)
+# Display total votes, percentage, seats, original seats, and difference in seats
+st.header('Suma głosów, procentów, mandatów, mandatów oryginalnych i różnicy mandatów')
+st.write(total_votes_df[['Nazwa Partii', 'Głosy', 'Procent', 'Mandaty', 'Mandaty Oryginalne', 'Różnica Mandaty']])
 
-# Display total votes, percentage, seats, and difference in seats for all districts
-st.header('Suma głosów, procentów, mandatów i różnicy mandatów dla wszystkich okręgów')
-st.write(total_votes_df[['Nazwa Partii', 'Głosy', 'Procent', 'Mandaty', 'Różnica Mandaty']])
+# Add a selector for districts at the bottom
+st.header('Wyniki dla wybranego okręgu')
+selected_district = st.selectbox('Wybierz Okręg', list(election_data.district_party_votes.keys()))
 
-# Plot bar chart for percentage of votes
-sns.set(style="whitegrid")
-fig, ax = plt.subplots(figsize=(15, 8))  # Adjust figure size
-barplot = sns.barplot(x='Nazwa Partii', y='Procent', data=total_votes_df, palette=total_votes_df['Partia'].map(party_colors).fillna('gray').tolist(), ax=ax)
-barplot.set_xticklabels(barplot.get_xticklabels(), rotation=45, horizontalalignment='right')
-ax.set_ylabel('Procent')
-ax.set_title('Procent głosów dla wszystkich okręgów')
-fig.tight_layout()  # Ensure the plot uses the available space
-st.pyplot(fig)
-
-# Plot stacked bar chart for total seats
-fig, ax = plt.subplots(figsize=(15, 8))  # Adjust figure size
-bottom = 0
-for party, color in party_colors.items():
-    seats = total_votes_df[total_votes_df['Partia'] == party]['Mandaty'].values[0] if party in total_votes_df['Partia'].values else 0
-    ax.barh(['Mandaty'], seats, left=bottom, color=color, label=party)
-    bottom += seats
-ax.set_xlim(0, 460)
-ax.set_title('Suma mandatów dla wszystkich okręgów')
-ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.2), ncol=4)  # Adjust legend position and shape
-fig.tight_layout()  # Ensure the plot uses the available space
-st.pyplot(fig)
-
-# Display eligible parties
-st.header('Uprawnione Partie')
-st.write(election_data.eligible_parties)
-
-# Select district
-districts = list(election_data.district_party_votes.keys())
-selected_district = st.selectbox('Wybierz Okręg', districts)
-
-# Display bar chart for selected district
+# Display results for the selected district
 if selected_district:
-    st.header(f'Wyniki dla Okręgu {selected_district}')
     district_data = election_data.district_party_votes[selected_district]
-    # setup map for party names to abbreviations
-    abbreviations = {party: get_party_abbreviation(party) for party in district_data.keys()}
-    # Create DataFrame for plotting and sorting. Attach abbreviations
-    df = pd.DataFrame(list(district_data.items()), columns=['Partia', 'Głosy'])
-    df['Nazwa Partii'] = df['Partia'].map(abbreviations)
-    # Sort DataFrame by votes
-    df = df.sort_values(by='Głosy', ascending=False)
-
-    # Calculate percentage of votes
-    total_votes = df['Głosy'].sum()
-    df['Procent'] = (df['Głosy'] / total_votes) * 100
-
-    # Assign colors to parties, default to 'gray' if not found
-    df['Kolor'] = df['Partia'].map(party_colors).fillna('gray')
-
-    # Plot bar chart with seaborn
-    sns.set(style="whitegrid")
-    fig, ax = plt.subplots(figsize=(15, 8))  # Adjust figure size
-    barplot = sns.barplot(x='Nazwa Partii', y='Procent', data=df, palette=df['Kolor'].tolist(), ax=ax)
-    barplot.set_xticklabels(barplot.get_xticklabels(), rotation=45, horizontalalignment='right')
-    ax.set_ylabel('Procent')
-    ax.set_title(f'Wyniki dla Okręgu {selected_district}')
-    fig.tight_layout()  # Ensure the plot uses the available space
-    st.pyplot(fig)
-
-    # Display sorted results below the chart
-    st.write(df[['Nazwa Partii', 'Głosy', 'Procent']])
-
-    # Get the number of seats for the selected district
-    seats = DISTRICTS_SEATS[selected_district]
-    st.write(f'Liczba mandatów: {seats}')
-    # For the allocation we need to filter the parties
+    # Filter eligible parties for the district
     parties_votes = {party: votes for party, votes in district_data.items() if party in election_data.eligible_parties}
-    # Calculate the allocation of seats
-    allocation = dhondt(parties_votes, seats)
-    # Display the allocation of seats
-    allocation_df = pd.DataFrame(list(allocation.items()), columns=['Partia', 'Mandaty'])
-    allocation_df['Nazwa Partii'] = allocation_df['Partia'].map(abbreviations)
-    allocation_df = allocation_df.sort_values(by='Mandaty', ascending=False)
-    allocation_df['Kolor'] = allocation_df['Partia'].map(party_colors).fillna('gray')
+    # Calculate seat allocation for the district
+    allocation = dhondt(parties_votes, DISTRICTS_SEATS[selected_district])
 
-    # Create a plot with squares representing seats
-    fig, ax = plt.subplots(figsize=(15, 3))  # Adjust figure size
-    seat_colors = []
-    for party, row in allocation_df.iterrows():
-        seat_colors.extend([row['Kolor']] * row['Mandaty'])
-    for i in range(seats):
-        ax.add_patch(plt.Rectangle((i, 0), 1, 1, color=seat_colors[i]))
-    ax.set_xlim(0, seats)
-    ax.set_ylim(0, 1)
-    ax.axis('off')
-    ax.set_title(f'Podział mandatów dla Okręgu {selected_district}')
-    fig.tight_layout()  # Ensure the plot uses the available space
-    st.pyplot(fig)
-    # Display the allocation of seats
-    st.write(allocation_df[['Nazwa Partii', 'Mandaty']])
+    # Create a DataFrame for the district results
+    district_results_df = pd.DataFrame(list(allocation.items()), columns=['Partia', 'Mandaty'])
+    district_results_df['Nazwa Partii'] = district_results_df['Partia'].map(lambda x: get_party_abbreviation(x))
+    district_results_df = district_results_df.sort_values(by='Mandaty', ascending=False)
+
+    # Display the district results table
+    st.write(district_results_df[['Nazwa Partii', 'Mandaty']])
