@@ -78,7 +78,10 @@ for modification in st.session_state.modifications:
             else:
                 votes[modification['target_party']] = votes_to_modify
         elif modification['modification_type'] == 'Usuń głosy':
-            votes[modification['selected_party']] -= votes_to_modify
+            if votes[modification['selected_party']] >= votes_to_modify:
+                votes[modification['selected_party']] -= votes_to_modify
+            else:
+                votes[modification['selected_party']] = 0
 
 # Recalculate the election data
 election_data.recalculate()
